@@ -1,0 +1,4 @@
+id: unique identifier for each Airbnb listing
+price: price per night
+number_of_reviews: total number of reviews for listing
+review_scores_rating: rating score of Airbnb given by reviewer

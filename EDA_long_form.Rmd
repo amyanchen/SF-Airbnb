@@ -1,0 +1,397 @@
+---
+title: "San Francisco Airbnb Analysis"
+author: "Amy Chen"
+date: "December 9, 2018"
+output:
+  html_document: 
+    code_folding: hide
+    df_print: paged
+---
+
+# Overview
+Airbnb is a global online hospitality service that connects travellers with lodging from local homeowners. The website and mobile application provide a marketplace for individuals to book or offer rooms. With services across numerous cities across the globe, Airbnb contains massive amounts of data on thousands of listings per region. In particular, San Francisco is where Airbnb was founded, and remains the location of its headquarters. It is a burgeoning city undergoing an economic boom due to the technology industry, and it would be interesting to observe rental housing prices under these circumstances.
+
+# Data
+The data used for this analysis is obtained from Inside Airbnb, a website that provides data scraped from public listings on the Airbnb website. I will be analyzing San Francisco data that was compiled on October 03, 2018. In particular, I will be using the "Detailed Listings data for San Francisco" with a file name of "listings.csv.gz", and "Detailed Review Data for listings in San Francisco" with a file name of "reviews.csv.gz". These datasets contain information about the same listings, so I will join them together by the variable `listing_id`.
+
+1. Murray Cox, 2018, "Detailed Listings data for San Francisco", Inside Airbnb, http://insideairbnb.com/get-the-data.html
+2. Murray Cox, 2018, "Detailed Review Data for listings in San Francisco", Inside Airbnb, http://insideairbnb.com/get-the-data.html
+
+# Goals
+The primary goal of this analysis is to identify the most important factors that affect housing prices, and attempt to predict prices based on these variables. Additionally, I would like to perform sentiment analysis on the reviews, and provide summary statistics of reviews for each listing.
+
+# Analysis
+
+## Housing Prices
+
+### Load Packages
+```{r, message = FALSE}
+# Load packages
+library(tidyverse)
+library(modelr)
+library(caret)
+library(ggmap)
+library(broom)
+library(knitr)
+```
+
+### Prices Dataset
+```{r, message = FALSE}
+# Import datasets
+prices <- read_csv(file = ("data/processed/prices.csv"), col_types = cols("n", col_factor(NULL), col_factor(NULL), "n", "n", "n", "c", "n", "n"))
+```
+
+After importing `prices`, a processed dataset that contains listing prices and several important factors that may go into daily rates, I will first take a look at the composition of the data.
+
+```{r}
+prices %>% glimpse()
+```
+`prices` contains 9 columns:
+
+* `price`: daily base rate for booking the room
+* `neighbourhood_cleansed`: neighborhood of listing (36 total)
+* `room_type`: type of room (3 total)
+* `accomodates`: number of individuals that can be accomodated
+* `bathrooms`: number of bathrooms
+* `bedrooms`: number of bedrooms
+* `amenities`: amenities available
+* `latitude`, `longitude`: the latitude or longitude of the Airbnb
+
+I will examine each variable and see whether there are any interesting relationships.
+<br>
+
+### Location
+Since individuals generally choose a hotel based on where they are travelling, I believe that `neighbourhood_cleansed`, `longitude`, and `latitude` are very influential on price. The more popular tourist areas are most likely more expensive.
+<br><br>
+I sorted the 36 neighborhoods in San Francisco based on their average housing price into 6 groups. Below are the groupings for reference.
+```{r}
+# Find avg price per neighborhood
+prices_neigh <- prices %>% 
+  group_by(neighbourhood_cleansed) %>% 
+  mutate(avg_price = round(mean(price), 2))
+
+# Label neighborhoods by price range
+prices_neigh[["neigh_cat"]] <- cut(prices_neigh$avg_price, 6, labels = c("Cheapest", "Cheap", "Moderately Cheap", "Moderately Expensive", "Expensive", "Most Expensive"))
+
+# Neighborhood groups
+prices_neigh %>% 
+  select(neighbourhood_cleansed, neigh_cat, avg_price) %>% 
+  group_by(neighbourhood_cleansed) %>% 
+  unique() %>% 
+  arrange(neigh_cat, avg_price)
+```
+<br>
+The average price per neighborhood ranges from as low as \$105 per night for the cheapest neighborhoods to \$287.83 per night for the most expensive.
+<br><br>
+Now, let's look at price for each `neighbourhood_cleansed` and `accomodates` pair to see what the general price an Airbnb would be for different numbers of people.
+```{r}
+prices_neigh %>% 
+  filter(accommodates <= 6) %>% 
+  ggplot(aes(x = as.factor(accommodates), y = fct_reorder(neighbourhood_cleansed, avg_price))) + 
+  geom_tile(aes(fill = price)) + 
+  scale_fill_gradientn(colors = c("#c1e8ff", "#002b42")) + 
+  labs(title = "Price vs Neighborhood Group and Accommodates", 
+       x = "Accommodates", y = "Neighborhood Group")
+```
+<br>
+The plot above shows `neighbourhood_cleansed` in ascending order of average price, and `accommodates`. The color represents `price`. Generally, the color is getting darker as `accommodates` and `neighbourhood_cleansed` increase. This indicates that for more expensive tourist areas and more people, Airbnb's tend to be more expensive. However, the trend does not appear to be very clear.
+<br><br>
+To visualize the individuals listings, I'll overlay the listings on a map of San Francisco and color the points by `price`.
+```{r, message = FALSE, warning = FALSE}
+sf <- get_stamenmap(bbox = c(left = -122.5164, bottom = 37.7066, right = -122.3554, top = 37.8103), maptype = c("toner-lines"), zoom = 13)
+
+ggmap(sf) + 
+  geom_point(data = prices, aes(x = longitude, y = latitude, color = price), alpha = 0.7) +
+  scale_colour_gradient(low = '#a4faff', high = '#00275b') +
+  labs(title = "Prices by Location")
+```
+<br>
+Based on this map, it seems as though most of the Airbnb listings are clustered in the center of the city and towards the northeast. This makes sense, since the center region is the heart of downtown San Francisco, and the northeast is next to the bay, which has many tourist attractions.
+<br><br>
+
+### Rooms: Number and Type
+There are three types of rooms:
+
+1. `Entire home/apt` indicates that the listing is for a complete house or apartment for the guest
+2. `Private room` indicates that the listing is for a room within a house or apartment that may be occupied by others
+3. `Shared room` indicates that the room is shared with other individuals.
+
+<br>
+Intuitively, I would expect that the more private the listing, the higher the price. Additionally, I would expect a higher number of bedrooms to be more expensive.
+```{r}
+prices %>% 
+  filter(bedrooms <= 5) %>% 
+  group_by(room_type) %>% 
+  mutate(avg_price = mean(price)) %>% 
+  ggplot(aes(x = room_type, color = as.factor(bedrooms))) +
+  geom_boxplot(aes(y = price)) + 
+  geom_point(aes(y = avg_price, size = 1), color = "red") +
+  labs(title = "Price vs Room Type by Number of Bedrooms", x = "Room Type", y = "Price", color = "Number of Bedrooms", size = "Average Price")
+```
+<br>
+The plot above confirms our hypotheses. The red points indicate the average price for each `room_type`. I can see a clear decreasing pattern. There are also boxplots for number of bedrooms, represented by different colors. For each `room_type`, the price increases as `bedrooms` increases.
+<br><br>
+I also have data on the number of `bathrooms`. Whole bathrooms that include a bath or shower are counted as one, while half bathrooms only have a toilet and a sink. It seems as though `bathrooms` would be dependent on `bedrooms`, so it's correlation to `price` would come from `bedrooms` instead of itself.
+```{r}
+prices %>% 
+  filter(bedrooms <= 5, bathrooms <= 5) %>% 
+  ggplot(aes(x = as.factor(bathrooms), y = price)) +
+  geom_boxplot() + 
+  facet_wrap(~bedrooms) +
+  labs(title = "Price vs Number of Bathrooms per Number of Bedrooms", x = "Number of Bathrooms", y = "Price")
+```
+
+Looking at the plot above, which displays `price` vs `bathrooms` faceted by `bedrooms`, it seems as though there is not relationship between `bathrooms` and `price` for each number of bedrooms. Only at 4 bedrooms is there a slightly positive correlation between `bathrooms` and `price`. For the other number of `bedrooms`, they are not positively correlated, so I conclude that `bathrooms` does not affect `price`.
+<br><br>
+
+### Number of People
+I will now look at the number of individuals accommodated by one listing and view the relationship with `price`. I expect a positive relationship, since generally, more individuals would require a larger space and more expensive house. 
+```{r, message = FALSE}
+prices %>% 
+  ggplot(aes(x = as.factor(accommodates), y = price)) +
+  geom_boxplot(aes(color = room_type)) +
+  geom_smooth(aes(x = accommodates), se = FALSE, color = "purple") + 
+  labs(title = "Price vs Number Accommodated", x = "Number Accommodated", y = "Price", color = "Room Type")
+```
+<br>
+The boxplots above represent `price` for the number of people accommodated. For each number of people, there is a different boxplot based on `room_type`. There is a positive relationship until `accommodates` reaches 9 people. This may be caused by a smaller number of observations that easily affect the trend. We still see the same relationship between `room_type` and `price`.
+<br><br>
+
+### Amenities
+To work with `amenities`, which is a string, I will first convert it to a vector of lists and replace it in `prices`.
+```{r}
+# Convert amenities from char to list
+amen <- prices$amenities
+amen_list <- vector("list", length(amen))
+for (i in seq_along(amen)){
+  # remove punctuation and extra characters
+  amen_list[[i]] = str_remove_all(amen[[i]], pattern = '[^([A-Z][a-z][0-9]|,|\'|\\s)]') %>%
+    # split by comma
+    str_split(pattern = ",")
+}
+prices[["amenities"]] <- amen_list
+```
+
+Now each Airbnb listing has a list of `amenities`. Next, I want to look at the 15 most frequently listed `amenities`.
+```{r, results='asis'}
+# Count frequency
+amen_freq <- prices$amenities %>% 
+  unlist() %>% 
+  table()
+
+# Remove unwanted rows
+amen_freq <- amen_freq[-c(1, 168, 169)]
+
+# Top 15
+amen_freq %>%
+  sort(decreasing = TRUE) %>% 
+  head(15) %>% kable(col.names = c("Amenities", "Freq"), align='c')
+```
+
+Many of these `amenities` seem reasonable, as they are common in hotels. I would expect there to be "Wifi", "Shampoo", and a "TV", since these are pretty standard for the lodging industry. Some interesting ones are "Smoke detector", "Carbon monoxide detector", and "Fire extinguisher". I would not have expected those to be listed as `amenities`. However, it makes sense, since they are legally required to be installed in every house or apartment in San Francisco. The reason that they are not the most common amenities may be that some people do not consider them to be amenities, so they have not listed them on Airbnb. However, I expect those to be the most common amenities if they were listed by every Airbnb host that provides them.
+<br><br>
+It would be interesting to see how `amenities` differs for expensive and cheap Airbnb listings.
+
+```{r}
+# Split into two groups by price
+amen_prices <- prices %>% 
+  mutate(above_average = ifelse(price > median(price), TRUE, FALSE))
+
+# Amenities per group
+expensive_amenities <- amen_prices %>% 
+  filter(above_average == TRUE) %>% 
+  select(amenities) %>% 
+  unlist() %>% 
+  table() %>% 
+  sort(decreasing = TRUE)
+
+cheap_amenities <- amen_prices %>% 
+  filter(above_average == FALSE) %>% 
+  select(amenities) %>% 
+  unlist() %>% 
+  table() %>% 
+  sort(decreasing = TRUE)
+```
+```{r}
+kable(list(head(expensive_amenities, 10), head(cheap_amenities, 10)), col.names = c("Amenities", "Freq"), align='c')
+```
+The above table shows the top 10 most frequently listed `amenities` for listings at above median prices (left) and below median prices(right). There does not seem to be a large difference in the `amenities`. This may be because `price` differs more on quality than simply which `amenities` are offered. Another explanation is that common `amenities` are provided by essentially all Airbnb hosts. Lastly, `amenities` may not be that important when considering `price`. The more important factors may be location or size.
+
+### Modelling
+I have examined all the variables in the `prices` dataset, so I will move on to attempting to predict `price`. I will test a few different linear models and determine which one best fits `prices`, then apply that model to a testing dataset and see how accurate the model is.
+
+```{r}
+# Model dataset
+dataset <- prices %>% 
+  select(-amenities)
+
+# Train-Test Split
+set.seed(100)
+pindex <- createDataPartition(dataset$price, p = 0.8, list = FALSE)
+ptrain <- dataset[pindex,]
+ptest <- dataset[-pindex,]
+```
+First, split the dataset into train and test sets. 80% of the data is in the `ptrain` set, and 20% is in `ptest`.
+
+```{r}
+# Linear models
+# all data
+price_lm_1 <- ptrain %>% 
+  lm(price ~ ., data = .)
+price_lm_1$call
+glance(price_lm_1) %>% kable()
+
+# all except lat and lon
+price_lm_2 <- ptrain %>% 
+  lm(price ~ neighbourhood_cleansed + room_type + accommodates
+     + bathrooms + bedrooms, data = .)
+price_lm_2$call
+glance(price_lm_2) %>% kable()
+
+# all except neighborhood
+price_lm_3 <- ptrain %>% 
+  lm(price ~ room_type + accommodates + bathrooms + 
+       bedrooms + latitude + longitude, data = .)
+price_lm_3$call
+glance(price_lm_3) %>% kable()
+```
+
+Above are the model formulas and their summary values. The first model has the highest R<sup>2</sup> value. 
+
+```{r}
+# Add predictions and residuals
+ptest <- ptest %>% 
+  add_predictions(model = price_lm_1, var = "1_pred") %>% 
+  add_predictions(model = price_lm_2, var = "2_pred") %>%
+  add_predictions(model = price_lm_3, var = "3_pred") %>%
+  add_residuals(model = price_lm_1, var = "1_resid") %>% 
+  add_residuals(model = price_lm_2, var = "2_resid") %>% 
+  add_residuals(model = price_lm_3, var = "3_resid")
+
+kable(list(sum(ptest$`1_resid`^2),
+  sum(ptest$`2_resid`^2),
+  sum(ptest$`3_resid`^2)), col.names = "Sum of Squared Residuals")
+```
+Above are the sums of the squared residuals for each model. The first model has the lowest value. However, none of the models have a particularly good fit. Thus, a linear model may not be the best choice in attempting to predict price. I will still take a look at the first model to see what relationships exist between `price` and the other variables.
+
+```{r}
+summary(price_lm_1)
+```
+The model has taken the categorical variables and assigned dummy variables for each observation. It looks like not many of `neighborhood_cleansed` dummy variables are significant. Interestingly, `latitude` has a much larger effect than `longitude`.
+<br><br>
+
+## Reviews
+Reviews can reveal information about each listing that cannot be found in quantitative data such as the number of `bedrooms` or even `amenities`.
+
+### Sentiments Dataset
+```{r, message = FALSE}
+# Import datasets
+sentiments <- read_csv("data/processed/sentiments.csv")
+listings <- read_csv("data/processed/listings.csv")
+```
+
+The cleaned `sentiments` dataset is composed of `word` and `sentiment` for all of the words in each review. The reviews are identified by the `reviewer_id`. Each review spans across many rows.
+```{r}
+sentiments %>% head() %>% kable()
+```
+
+### Top Words
+It would be interesting to see what the most frequent positive and negative words in the reviews are.
+```{r}
+# top positive words
+positive <- sentiments %>% 
+  filter(sentiment == "positive") %>% 
+  count(word, sentiment, sort = TRUE) %>% 
+  select(-sentiment)
+
+# top negative words
+negative <- sentiments %>% 
+  filter(sentiment == "negative") %>% 
+  count(word, sentiment, sort = TRUE) %>% 
+  select(-sentiment)
+
+kable(list(head(positive, 10), head(negative, 10)), align='c')
+```
+
+The most frequent positive words are on the left, and the most frequent negative words are on the right of the table above. In my opinion, these words are categorized correctly, and make sense. In the positive column, it seems that clean and comfortable Airbnb's receive positive reviews. In the negative column, it appears that Airbnb's that are loud and cold receive negative reviews.
+<br><br>
+
+### Sentiment Scores
+I will now count the number of positive and negative words, then calculate the sentiment score per review by subtracting the number of negative reviews from the number of positive reviews.
+
+```{r}
+# sentiments per review
+listing_sent <- sentiments %>% 
+  # group by reviewer
+  group_by(reviewer_id) %>% 
+  # count positive and negatve sentiments
+  count(listing_id, sentiment) %>% 
+  # make new positive and negative count columns
+  spread(key = sentiment, value = n, fill = 0) %>%  
+  # calculate overall sentiment per review
+  mutate(sent = positive - negative)
+
+listing_sent %>% head() %>% kable()
+```
+
+Then, I'll find the average sentiment per review and join the dataset with the original `listings`.
+```{r}
+# average sentiments per listing
+listing_sent <- listing_sent %>% 
+  # group by listing
+  group_by(listing_id) %>% 
+  # average sentiment per listing
+  summarize(avg_sent = mean(sent)) %>%
+  # join with original dataset
+  left_join(listings, by = c("listing_id" = "id"))
+
+listing_sent %>% 
+  arrange(desc(avg_sent)) %>% 
+  select(listing_id:number_of_reviews, review_scores_rating) %>% 
+  head(10) %>% kable()
+```
+
+Above are the top 10 listings with the best reviews based on sentiment analysis. The `review_scores_rating` is the average score given by reviewers. The scores seem to match the sentiments of the reviews well. A better way to see if there is a trend would be to plot the data.
+
+```{r}
+listing_sent %>% 
+  ggplot(aes(x = as.factor(review_scores_rating), y = avg_sent)) +
+  geom_boxplot() +
+  labs(title = "Average Sentiment vs Review Scores",
+       x = "Review Scores", y = "Average Sentiment")
+```
+<br>
+There is a strong positive relationship between the average sentiment and review scores. This indicates that the sentiment analysis was successful.
+<br><br>
+
+### Price
+Intuitively, I would expect more positive reviews to be correlated with higher prices.
+
+```{r, warning = FALSE}
+listing_sent %>% 
+  ggplot(aes(x = price, y = avg_sent)) + 
+  geom_point() + 
+  geom_smooth(se = FALSE, method = "lm") + 
+  labs(title = "Average Sentiment Score vs Price",
+       x = "Price", y = "Average Sentiment Score")
+```
+<br>
+Above is a plot of `price` on the x-axis and `avg_sent`, the average sentiment score, on the y-axis. It seems that there is a positive relationship between them. It might help to take a look at where the points are more concentrated - lower prices.
+
+```{r}
+listing_sent %>% 
+  filter(price <= 250) %>% 
+  ggplot(aes(x = price, y = avg_sent)) + 
+  geom_point() + 
+  geom_smooth(se = FALSE, method = "lm") + 
+  labs(title = "Average Sentiment Score vs Price",
+       x = "Price", y = "Average Sentiment Score")
+```
+<br>
+Above is the same plot as before, for listings priced at less than \$250. The linear trend is a lot stronger now, indicated that there is a positive relationship between price and reviews.
+<br><br>
+
+# Conclusion
+I have explored data on Airbnb listings and examined multiple variables that affect `price`. The ones that seem to affect it the most are `room_type` and `bedrooms`. Surprisingly, there is not a clear pattern in the location variables. This may be because the variables in the data are not the best for capturing location data. Unfortunately, a linear model does not fit the data well.
+<br><br>
+I have also examined the sentiments of reviews for the listings. The sentiment analysis matched the scores given by the reviewers well.

@@ -1,0 +1,8 @@
+price: price per night
+neighbourhood_cleansed: neighborhood of listing (36 total)
+room_type: type of room (3 total)
+accomodates: number of individuals that can be accomodated
+bathrooms: number of bathrooms
+bedrooms: number of bedrooms
+amenities: amenities available
+latitude, longitude: the latitude or longitude of the Airbnb

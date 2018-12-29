@@ -1,0 +1,5 @@
+listing_id: unique id per Airbnb listing
+date: date review posted
+reviewer_id: unique id per Airbnb user
+word: single word from review
+sentiment: positive or negative based on sentiment of word

@@ -1,0 +1,97 @@
+---
+title: "San Francisco Airbnb Executive Summary"
+author: "Amy Chen"
+date: "December 9, 2018"
+output:
+  html_document: 
+    code_folding: hide
+    df_print: paged
+---
+
+# Overview
+Airbnb is a global online hospitality service that connects travellers with lodging from local homeowners. The website and mobile application provide a marketplace for individuals to book or offer rooms. With services across numerous cities across the globe, Airbnb contains massive amounts of data on thousands of listings per region. In particular, San Francisco is where Airbnb was founded, and remains the location of its headquarters. It is a burgeoning city undergoing an economic boom due to the technology industry, and it would be interesting to observe rental housing prices under these circumstances.
+
+# Data
+The data used for this analysis is obtained from Inside Airbnb, a website that provides data scraped from public listings on the Airbnb website. I will be analyzing San Francisco data that was compiled on October 03, 2018. In particular, I will be using the "Detailed Listings data for San Francisco" with a file name of "listings.csv.gz", and "Detailed Review Data for listings in San Francisco" with a file name of "reviews.csv.gz". These datasets contain information about the same listings, so I will join them together by the variable `listing_id`.
+
+1. Murray Cox, 2018, "Detailed Listings data for San Francisco", Inside Airbnb, http://insideairbnb.com/get-the-data.html
+2. Murray Cox, 2018, "Detailed Review Data for listings in San Francisco", Inside Airbnb, http://insideairbnb.com/get-the-data.html
+
+# Goals
+The primary goal of this analysis is to identify the most important factors that affect housing prices, and attempt to predict prices based on these variables. Additionally, I would like to perform sentiment analysis on the reviews, and provide summary statistics of reviews for each listing.
+
+# Summary of Analysis
+After looking at Airbnb listing prices and examining the variables, I concluded that the most important factors that affect price are the type of room and the number of bedrooms. These results are intuitive. However, I would like to focus on more surprising findings.
+<br><br>
+While location matters, the data does not provide a good way to include location in a model.
+```{r, message = FALSE}
+# Load packages
+library(tidyverse)
+library(ggmap)
+library(knitr)
+```
+
+```{r, message = FALSE}
+# Import datasets
+prices <- read_csv(file = ("data/processed/prices.csv"), col_types = cols("n", col_factor(NULL), col_factor(NULL), "n", "n", "n", "c", "n", "n"))
+
+sentiments <- read_csv("data/processed/sentiments.csv")
+listings <- read_csv("data/processed/listings.csv")
+```
+
+```{r, message = FALSE, warning = FALSE}
+sf <- get_stamenmap(bbox = c(left = -122.5164, bottom = 37.7066, right = -122.3554, top = 37.8103), maptype = c("toner-lines"), zoom = 13)
+
+ggmap(sf) + 
+  geom_point(data = prices, aes(x = longitude, y = latitude, color = price), alpha = 0.7) +
+  scale_colour_gradient(low = '#a4faff', high = '#00275b') +
+  labs(title = "Prices by Location")
+```
+<br>
+When overlaying location on a map, I can see that the center and northeast tend to have darker colors, indicating higher prices. Unfortunately, linear models do not pick up on this trend. A possible explanation is that longitude and latitude don't vary much across a city.
+<br><br>
+Another surprising finding is that number of `bathrooms` does not affect `price`.
+```{r}
+prices %>% 
+  filter(bedrooms <= 5, bathrooms <= 5) %>% 
+  ggplot(aes(x = as.factor(bathrooms), y = price)) +
+  geom_boxplot() + 
+  facet_wrap(~bedrooms) +
+  labs(title = "Price vs Number of Bathrooms per Number of Bedrooms", x = "Number of Bathrooms", y = "Price")
+```
+<br>
+A possible explanation may be that the number of `bathrooms` is dependent on the number of `bedrooms`, and only affects `price` through `bedrooms`.
+<br><br>
+The last interesting aspect is the sentiment analysis I performed on reviews. I found sentiment scores by subtracting the number of negative words from the number of positive words in each review, and I averaged the scores.
+
+```{r}
+# sentiments per review
+listing_sent <- sentiments %>% 
+  # group by reviewer
+  group_by(reviewer_id) %>% 
+  # count positive and negatve sentiments
+  count(listing_id, sentiment) %>% 
+  # make new positive and negative count columns
+  spread(key = sentiment, value = n, fill = 0) %>%  
+  # calculate overall sentiment per review
+  mutate(sent = positive - negative)
+
+# average sentiments per listing
+listing_sent <- listing_sent %>% 
+  # group by listing
+  group_by(listing_id) %>% 
+  # average sentiment per listing
+  summarize(avg_sent = mean(sent)) %>%
+  # join with original dataset
+  left_join(listings, by = c("listing_id" = "id"))
+
+listing_sent %>% 
+  filter(price <= 250) %>% 
+  ggplot(aes(x = price, y = avg_sent)) + 
+  geom_point() + 
+  geom_smooth(se = FALSE, method = "lm") + 
+  labs(title = "Average Sentiment Score vs Price",
+       x = "Price", y = "Average Sentiment Score")
+```
+<br>
+Looking at most of the Airbnb's, there is a strong relationship between `price` and average sentiment score.
